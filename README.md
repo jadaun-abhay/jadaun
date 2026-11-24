@@ -13,8 +13,12 @@ versions, discovers each app's views on disk, and generates the
   viewsets registered on routers automatically (list/detail generation for
   plain views, DRF's `DefaultRouter` for viewsets).
 
+Wiring it up is a single call at the bottom of your settings module — no
+edits to `manage.py`, no `include()` call to add to your root `urls.py`.
+
 It also ships a friendlier `startapp` management command that understands
-nested namespace apps and both routing styles.
+nested namespace apps and both routing styles, discovered automatically
+once `jadaun` is in `INSTALLED_APPS` (which `autowire()` handles for you).
 
 ## Installation
 
@@ -35,75 +39,76 @@ list your own apps by hand (see [Settings](#settings) below).
 **1. Describe your apps in a YAML config** (`jadaun.config.yaml` by default):
 
 ```yaml
-server:
-  args:
-    host: 0.0.0.0
-    port: 8000
-
 modules:
   widgets:
     allowed: ["v1"]
     default: "v1"
 ```
 
-**2. Wire it into `manage.py`**, before Django starts up:
+**2. Add one call to the bottom of your settings module.** Nothing else
+changes — `manage.py` and your root `urls.py` stay exactly as Django
+generated them:
 
 ```python
-import os
-import sys
+# config/settings.py
+from jadaun import autowire
 
-def main():
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+DEBUG = True
+ROOT_URLCONF = "config.urls"      # your own urls.py - admin, static, whatever you want
+DEFAULT_APPS_DIR = "apps"
+# ... the rest of your settings ...
 
-    from django.conf import settings
-    from django.core import management
-
-    from jadaun.initializer import Initializer
-
-    initializer = Initializer(sys.argv)
-    args = initializer.initialize()
-    settings.INITIALIZER = initializer
-
-    management.execute_from_command_line(args)
-
-if __name__ == "__main__":
-    main()
+autowire(globals())               # must be the LAST statement - see below
 ```
 
-`Initializer.initialize()` parses the YAML config, discovers every
-configured app (`AppRegistry`), sets `settings.INSTALLED_APPS`, and builds
-the full `urlpatterns` tree (`Builder`) — all before Django's app registry
-loads.
+`autowire()`:
+- discovers every app declared under `modules` and computes `INSTALLED_APPS`
+  for you (adding `"jadaun"` itself, so the `startapp` command below is
+  found automatically — Django discovers management commands from any
+  installed app, no further wiring needed);
+- points `ROOT_URLCONF` at a small generated module that mounts the
+  discovered urls under `api/` *alongside* your own `config.urls` - so
+  your `urls.py` never needs an `include()` call for this at all.
 
-**3. Include the generated urls** in your root `urls.py`:
+**It has to be the last statement in the file.** It reads `DEBUG`,
+`DEFAULT_APPS_DIR`, `DEFAULT_DJANGO_APPS`, `THIRD_PARTY_APPS`, `DEV_APPS`
+and `PROD_APPS` straight out of `globals()` rather than through
+`django.conf.settings`, specifically so it never triggers Django's lazy
+settings loader while this very module is still mid-import — doing that
+would make Django read a half-initialized settings module and silently
+drop everything defined *after* that point in the file. Define every other
+setting first, call `autowire(globals())` last.
 
-```python
-from django.conf import settings
-from django.urls import include, path
-
-urlpatterns = [
-    path("api/", include(settings.INITIALIZER.builder.build())),
-]
-```
-
-**4. Write a view.** For `widgets` above, `jadaun` imports
+**3. Write a view.** For `widgets` above, `jadaun` imports
 `apps.widgets.api.v1.views` and turns whatever it finds there into routes
 under `api/widgets/v1/...`.
 
+### A note on timing
+
+`autowire()` only touches the filesystem up front (to compute
+`INSTALLED_APPS`) — it never imports your apps' own view modules at
+settings-load time, so it's safe to run before `django.setup()`. The
+*actual* urlpatterns (which does import every discovered app's views) are
+only built the first time a URL is resolved, which is always after
+`django.setup()` has finished — so your views are free to reference models
+by then.
+
 ## Settings
 
-`jadaun` doesn't ship its own settings module — it reads plain Django
-settings via `getattr(settings, "...", default)`, so it never conflicts with
-however you manage configuration (`pydantic-settings`, `django-environ`,
-plain `.py` files, …).
+`jadaun` doesn't ship its own settings module. In the `autowire()` flow
+above, it reads straight out of your settings module's own namespace; used
+manually (see [Advanced: manual wiring](#advanced-manual-wiring)), it falls
+back to plain Django settings via `getattr(settings, "...", default)`.
+Either way it never conflicts with how you manage configuration
+(`pydantic-settings`, `django-environ`, plain `.py` files, …).
 
 | Setting              | Default   | Meaning                                                             |
 | --------------------- | --------- | -------------------------------------------------------------------- |
 | `DEFAULT_APPS_DIR`    | `"apps"`  | Directory new/discovered apps live under.                            |
 | `DEFAULT_DJANGO_APPS` | `[]`      | Always-installed Django apps (admin, auth, …).                       |
 | `THIRD_PARTY_APPS`    | `[]`      | Always-installed third-party apps.                                   |
-| `DEV_APPS`            | `[]`      | Installed only when `settings.DEBUG` is `True`.                      |
-| `PROD_APPS`           | `[]`      | Installed only when `settings.DEBUG` is `False`.                     |
+| `DEV_APPS`            | `[]`      | Installed only when `DEBUG` is `True`.                               |
+| `PROD_APPS`           | `[]`      | Installed only when `DEBUG` is `False`.                              |
 
 Apps declared under `modules` in the YAML config are discovered and
 installed on top of these.
@@ -232,16 +237,71 @@ python manage.py startapp                       # interactive wizard
   both the app name/path and the template.
 - `--no-input` forces non-interactive behavior even in a terminal.
 
+## Advanced: manual wiring
+
+`autowire()` is a thin convenience layer over three lower-level pieces, all
+still available directly if you want more control — e.g. `Initializer` also
+inserts a default `host:port` into `runserver` from the config file's
+`server.args`, which only works from `manage.py` (nothing running from
+inside settings.py can reliably rewrite `sys.argv` before Django's command
+dispatch reads it, which is exactly why `autowire()` doesn't attempt it):
+
+```python
+# manage.py
+import os
+import sys
+
+def main():
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+
+    from django.conf import settings
+    from django.core import management
+
+    from jadaun.initializer import Initializer
+
+    initializer = Initializer(sys.argv)
+    args = initializer.initialize()       # parses config, builds INSTALLED_APPS + urlpatterns eagerly
+    settings.INITIALIZER = initializer
+
+    management.execute_from_command_line(args)
+
+if __name__ == "__main__":
+    main()
+```
+
+```python
+# config/urls.py
+from django.conf import settings
+from django.urls import include, path
+
+urlpatterns = [
+    path("api/", include(settings.INITIALIZER.builder.build())),
+]
+```
+
+Unlike `autowire()`, this path builds the full urlpatterns tree (importing
+every discovered app's views) eagerly, in `manage.py`, before
+`django.setup()` runs — so, same as `autowire()`, a view that references a
+model directly in its own module body (rather than inside a method) will
+raise `AppRegistryNotReady`. This is a property of discovering apps before
+Django's app registry exists at all, not something either wiring style
+fixes; keep model references inside methods/properties, not at class body
+level, if you hit it.
+
+`Initializer`/`ConfigParser`/`Builder`/`AppRegistry` are also usable
+directly/individually if you want a completely custom wiring strategy.
+
 ## Project layout
 
 ```
 src/jadaun/
-├── config.py                  # ConfigParser - loads the YAML config
+├── autowire.py                 # autowire() - one-call settings.py wiring
+├── config.py                   # ConfigParser - loads the YAML config
 ├── initializer/
-│   ├── __init__.py            # Initializer - entry point from manage.py
-│   ├── apps.py                # AppConfig, AppRegistry - app discovery
-│   ├── builder.py             # Builder - urlpatterns generation
-│   ├── functions.py           # view discovery (recursive + folder-based)
+│   ├── __init__.py             # Initializer - manual manage.py entry point
+│   ├── apps.py                 # AppConfig, AppRegistry - app discovery
+│   ├── builder.py              # Builder - urlpatterns generation
+│   ├── functions.py            # view discovery (recursive + folder-based)
 │   └── types.py                # ModuleConfigDescriptionType (pydantic)
 ├── router/
 │   ├── base.py                 # BaseRouter - generic DRF-style router base
