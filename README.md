@@ -61,14 +61,23 @@ DEFAULT_APPS_DIR = "apps"
 autowire(globals())               # must be the LAST statement - see below
 ```
 
-`autowire()`:
-- discovers every app declared under `modules` and computes `INSTALLED_APPS`
-  for you (adding `"jadaun"` itself, so the `startapp` command below is
-  found automatically — Django discovers management commands from any
-  installed app, no further wiring needed);
-- points `ROOT_URLCONF` at a small generated module that mounts the
-  discovered urls under `api/` *alongside* your own `config.urls` - so
-  your `urls.py` never needs an `include()` call for this at all.
+`autowire()` discovers every app declared under `modules` and computes
+`INSTALLED_APPS` for you, adding `"jadaun"` itself. That's the one thing it
+*has* to do explicitly, and *before* `django.setup()` - Django reads the
+whole `INSTALLED_APPS` list as the very first step of starting up, before
+any app's own `ready()` can run, so there's no way to make this part happen
+implicitly just because `jadaun` ends up installed.
+
+Everything else follows automatically once `jadaun` is installed, with no
+further calls:
+- `startapp` (below) is discovered the same way Django discovers any
+  app's management commands - no further wiring needed.
+- `JadaunConfig.ready()` (jadaun's own `AppConfig`) mounts the discovered
+  urls under `api/` *alongside* your own `config.urls`, by pointing
+  `ROOT_URLCONF` at a small generated module - so your `urls.py` never
+  needs an `include()` call for this at all. This happens automatically,
+  after `django.setup()`'s app loading, since by then it's just reading
+  `settings.ROOT_URLCONF` normally - no mid-import hazard to worry about.
 
 **It has to be the last statement in the file.** It reads `DEBUG`,
 `DEFAULT_APPS_DIR`, `DEFAULT_DJANGO_APPS`, `THIRD_PARTY_APPS`, `DEV_APPS`

@@ -15,7 +15,6 @@ _GENERATED_URLCONF = "jadaun._generated_urlconf"
 def autowire(
     globalns: dict[str, Any],
     *,
-    root_urlconf: str | None = None,
     config_file: str | None = None,
     api_prefix: str = "api/",
 ) -> Builder:
@@ -33,8 +32,11 @@ def autowire(
         autowire(globals())
 
     No changes are needed to `manage.py` or to your own `ROOT_URLCONF`
-    module - this computes `INSTALLED_APPS` and mounts the generated urls
-    for you.
+    module - this computes `INSTALLED_APPS` for you, and mounting the
+    generated urls under `api_prefix` alongside your own `ROOT_URLCONF`
+    happens automatically afterwards, in `JadaunConfig.ready()` - Django
+    calls that itself once `jadaun` is actually installed (which this
+    function makes sure of), no further wiring needed.
 
     It must run last: it reads `DEFAULT_APPS_DIR`/`DEBUG`/
     `DEFAULT_DJANGO_APPS`/`THIRD_PARTY_APPS`/`DEV_APPS`/`PROD_APPS` straight
@@ -55,28 +57,19 @@ def autowire(
     It discovers your apps and writes `INSTALLED_APPS` into `globalns`
     directly - this part runs eagerly, right now, but only touches the
     filesystem (no app's own view modules are imported yet, so this is safe
-    even though `django.setup()` hasn't run).
-
-    It also points `globalns["ROOT_URLCONF"]` at a small generated module
-    that mounts the dynamic urls under `api_prefix` alongside your own
-    `root_urlconf` (defaulting to `globalns["ROOT_URLCONF"]`) - built so
-    that Django only imports either of them, and only builds the actual
-    urlpatterns (which *does* import every discovered app's views), the
-    first time a URL is resolved. That's always after `django.setup()` has
-    finished, so views are free to reference models.
+    even though `django.setup()` hasn't run). Computing `INSTALLED_APPS`
+    fundamentally *has* to happen before `django.setup()` - Django reads the
+    whole list as the very first step of `apps.populate()`, before any
+    app's `ready()` runs, so there's no hook that could do this part for
+    you implicitly just because `jadaun` ends up installed; some explicit
+    call is unavoidable as long as apps are discovered dynamically.
 
     Returns the `Builder` used, also stashed on `globalns["JADAUN_BUILDER"]`
-    for introspection/debugging.
+    (and `globalns["JADAUN_API_PREFIX"]`) for `JadaunConfig.ready()` to pick
+    up later, and for introspection/debugging.
     """
     from jadaun.config import ConfigParser
     from jadaun.initializer.builder import Builder
-
-    root_urlconf = root_urlconf or globalns.get("ROOT_URLCONF")
-    if not root_urlconf:
-        raise ValueError(
-            "autowire() needs ROOT_URLCONF - set it before calling autowire(), "
-            "or pass root_urlconf=... explicitly."
-        )
 
     config_parser = ConfigParser(config_file) if config_file else ConfigParser()
     config_parser.load_config()
@@ -102,33 +95,36 @@ def autowire(
 
     globalns["INSTALLED_APPS"] = list(builder.apps.installed_apps.keys())
     globalns["JADAUN_BUILDER"] = builder
-    globalns["ROOT_URLCONF"] = _mount_combined_urlconf(root_urlconf, builder, api_prefix)
+    globalns["JADAUN_API_PREFIX"] = api_prefix
 
     return builder
 
 
-def _mount_combined_urlconf(root_urlconf: str, builder: Builder, api_prefix: str) -> str:
+def mount_combined_urlconf(
+    root_urlconf: str | None, builder: Builder, api_prefix: str
+) -> str:
     """Register a urlconf module combining `root_urlconf` with the generated
     urls, without importing either eagerly.
 
+    Called from `JadaunConfig.ready()`, once Django's app registry is fully
+    populated - `root_urlconf` here is whatever the project itself set
+    `ROOT_URLCONF` to, untouched.
+
     Django only imports `ROOT_URLCONF` - and reads its `urlpatterns` - the
-    first time a URL actually needs resolving (normally the first request),
-    well after `django.setup()` has finished. This module is built from
-    inside settings.py, well *before* that, so its own `urlpatterns` is
-    computed lazily too (via module-level `__getattr__`, PEP 562): neither
-    `include(root_urlconf)` nor `builder.build()` (which imports every
-    discovered app's view modules - possibly including models) run until
-    something actually asks this module for its `urlpatterns`.
+    first time a URL actually needs resolving (normally the first request).
+    This module's own `urlpatterns` is computed lazily too (via
+    module-level `__getattr__`, PEP 562): neither `include(root_urlconf)`
+    nor `builder.build()` (which imports every discovered app's view
+    modules - possibly including models) run until something actually asks
+    this module for its `urlpatterns`.
     """
     module = ModuleType(_GENERATED_URLCONF)
 
     def __getattr__(name: str) -> list[URLPattern | URLResolver]:
         if name != "urlpatterns":
             raise AttributeError(name)
-        value = [
-            path("", include(root_urlconf)),
-            path(api_prefix, include(builder.build())),
-        ]
+        dynamic = path(api_prefix, include(builder.build()))
+        value = [path("", include(root_urlconf)), dynamic] if root_urlconf else [dynamic]
         module.urlpatterns = value
         return value
 
