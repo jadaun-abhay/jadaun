@@ -225,6 +225,12 @@ class Command(TemplateCommand):
         except OSError as e:
             raise CommandError(e)
 
+        # AppConfig.name must be the full dotted import path - just
+        # app_name on its own is wrong for anything but a top-level,
+        # non-namespaced app.
+        apps_dir_dotted = getattr(settings, "DEFAULT_APPS_DIR", "apps").replace("/", ".")
+        app_dotted_name = ".".join([apps_dir_dotted, *namespace_segments, app_name])
+
         extensions = tuple(handle_extensions(options["extensions"]))
         extra_files = []
         if self.verbosity >= 2:
@@ -239,6 +245,7 @@ class Command(TemplateCommand):
             {
                 **options,
                 "app_name": app_name,
+                "app_dotted_name": app_dotted_name,
                 "app_directory": top_dir,
                 "camel_case_app_name": "".join(x for x in app_name.title() if x != "_"),
                 "docs_version": get_docs_version(),
