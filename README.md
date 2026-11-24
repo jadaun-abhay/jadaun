@@ -25,7 +25,8 @@ once `jadaun` is in `INSTALLED_APPS` (which `autowire()` handles for you).
 Not published yet — add it as a local path or git dependency:
 
 ```bash
-uv add jadaun --path ../jadaun        # local checkout
+uv add ../jadaun                      # local checkout (relative or absolute path)
+uv add ../jadaun --editable           # same, but picks up source edits without reinstalling
 # or
 uv add git+https://your-remote/jadaun.git
 ```
@@ -101,6 +102,172 @@ settings-load time, so it's safe to run before `django.setup()`. The
 only built the first time a URL is resolved, which is always after
 `django.setup()` has finished — so your views are free to reference models
 by then.
+
+## Usage
+
+A full, from-scratch walkthrough — a small todo API, folder-based routing, a
+real model. Every command and response below was actually run.
+
+**1. Create the project and install dependencies:**
+
+```bash
+mkdir todoapi && cd todoapi
+uv init --bare
+uv add django djangorestframework pyyaml
+uv add ../jadaun --editable           # path to your jadaun checkout
+```
+
+**2. Scaffold the usual Django project files:**
+
+```bash
+uv run django-admin startproject config .
+```
+
+This gives you `manage.py`, `config/settings.py`, `config/urls.py`, etc. —
+all untouched by `jadaun`.
+
+**3. Replace `config/settings.py`'s app-related settings and add `autowire()`
+as the last statement:**
+
+```python
+# config/settings.py
+from pathlib import Path
+
+from jadaun import autowire
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+SECRET_KEY = "dev-secret-key"
+DEBUG = True
+ALLOWED_HOSTS = []
+
+DEFAULT_APPS_DIR = "apps"
+DEFAULT_DJANGO_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+]
+THIRD_PARTY_APPS = ["rest_framework"]
+
+# ... MIDDLEWARE, ROOT_URLCONF, TEMPLATES, WSGI_APPLICATION, DATABASES,
+# LANGUAGE_CODE, TIME_ZONE, USE_I18N, USE_TZ, STATIC_URL - leave these
+# exactly as `startproject` generated them.
+
+autowire(globals())
+```
+
+**4. Add an (empty, for now) `jadaun.config.yaml` at the project root:**
+
+```yaml
+modules: {}
+```
+
+Check it's all wired correctly before creating any app:
+
+```bash
+$ uv run python manage.py check
+System check identified no issues (0 silenced).
+```
+
+**5. Scaffold a `todos` app.** The app has to exist on disk *before* you
+reference it in `jadaun.config.yaml` — `autowire()` fails fast if a
+declared module's folder doesn't exist yet, and `startapp` itself needs to
+run successfully first:
+
+```bash
+$ uv run python manage.py startapp todos --no-input
+
+Done! Created app 'todos' at apps/todos/
+  Template: package
+  Next: add 'todos' under `modules` in your jadaun config file to wire up routing.
+```
+
+**6. Add a model** (`apps/todos/models/__init__.py`):
+
+```python
+from django.db import models
+
+
+class Todo(models.Model):
+    title = models.CharField(max_length=200)
+    done = models.BooleanField(default=False)
+```
+
+**7. Now add `todos` to `jadaun.config.yaml`:**
+
+```yaml
+modules:
+  todos:
+    allowed: ["v1"]
+    default: "v1"
+```
+
+**8. Write the view** (`apps/todos/api/v1/views/__init__.py` — this file is
+the views *package's* own `__init__.py`, so the view binds to the package's
+own path, `todos/v1/`, with no extra segment):
+
+```python
+from django.http import JsonResponse
+
+from jadaun.views import BaseAPIView
+
+from apps.todos.models import Todo
+
+
+class TodoListView(BaseAPIView):
+    def get(self, request, *args, **kwargs):
+        todos = list(Todo.objects.values("id", "title", "done"))
+        return JsonResponse({"todos": todos})
+
+    def post(self, request, *args, **kwargs):
+        title = request.data.get("title")
+        if not title:
+            self.fail("title is required", status_code=400)
+        todo = Todo.objects.create(title=title)
+        return JsonResponse(
+            {"id": todo.id, "title": todo.title, "done": todo.done}, status=201
+        )
+```
+
+**9. Migrate and run:**
+
+```bash
+uv run python manage.py makemigrations todos
+uv run python manage.py migrate
+uv run python manage.py runserver
+```
+
+**10. Try it:**
+
+```bash
+$ curl http://127.0.0.1:8000/api/todos/v1/
+{"todos": []}
+
+$ curl -X POST -H "Content-Type: application/json" \
+    -d '{"title":"buy milk"}' http://127.0.0.1:8000/api/todos/v1/
+{"id": 1, "title": "buy milk", "done": false}
+
+$ curl http://127.0.0.1:8000/api/todos/v1/
+{"todos": [{"id": 1, "title": "buy milk", "done": false}]}
+
+$ curl -X POST -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8000/api/todos/v1/
+{"detail":"title is required"}
+```
+
+`/admin/` works too, out of the box — it came from `DEFAULT_DJANGO_APPS` and
+your own `config/urls.py`, included automatically alongside the generated
+`/api/` routes.
+
+From here: move the view into `apps/todos/api/v1/views/item/__init__.py`
+instead of the package's own `__init__.py` to get it at `todos/v1/item/`
+and free up `todos/v1/` for something else, add an `auth/login.py`-style
+endpoint, add a second `v2` under `allowed` for a new version, or `startapp`
+a second app under a namespace folder — see
+[Routing styles](#routing-styles), [The config file](#the-config-file), and
+[`startapp`](#startapp) below for each of those.
 
 ## Settings
 
