@@ -66,34 +66,47 @@ class AppRegistry:
         if self._populated:
             return
 
-        DEFAULT_APPS_DIR = DEFAULT_APPS_DIR or getattr(
+        # Resolved into freshly, explicitly non-Optional-typed locals - a
+        # plain `if X is None: X = getattr(...)` reassignment doesn't narrow
+        # `X: list[str] | None` to `list[str]` for the type checker, since
+        # `getattr(settings, ..., default)` is typed `Any` (no django-stubs)
+        # and assigning `Any` back onto an Optional-declared parameter keeps
+        # the Optional in its narrowed type.
+        apps_dir: str = DEFAULT_APPS_DIR or getattr(
             settings, "DEFAULT_APPS_DIR", _DEFAULT_APPS_DIR
         )
-        if DEBUG is None:
-            DEBUG = settings.DEBUG
-        if DEFAULT_DJANGO_APPS is None:
-            DEFAULT_DJANGO_APPS = getattr(
-                settings, "DEFAULT_DJANGO_APPS", _DEFAULT_DJANGO_APPS
-            )
-        if THIRD_PARTY_APPS is None:
-            THIRD_PARTY_APPS = getattr(settings, "THIRD_PARTY_APPS", _THIRD_PARTY_APPS)
-        if DEV_APPS is None:
-            DEV_APPS = getattr(settings, "DEV_APPS", _DEV_APPS)
-        if PROD_APPS is None:
-            PROD_APPS = getattr(settings, "PROD_APPS", _PROD_APPS)
+        debug: bool = settings.DEBUG if DEBUG is None else DEBUG
+        default_django_apps: list[str] = (
+            DEFAULT_DJANGO_APPS
+            if DEFAULT_DJANGO_APPS is not None
+            else getattr(settings, "DEFAULT_DJANGO_APPS", _DEFAULT_DJANGO_APPS)
+        )
+        third_party_apps: list[str] = (
+            THIRD_PARTY_APPS
+            if THIRD_PARTY_APPS is not None
+            else getattr(settings, "THIRD_PARTY_APPS", _THIRD_PARTY_APPS)
+        )
+        dev_apps: list[str] = (
+            DEV_APPS if DEV_APPS is not None else getattr(settings, "DEV_APPS", _DEV_APPS)
+        )
+        prod_apps: list[str] = (
+            PROD_APPS
+            if PROD_APPS is not None
+            else getattr(settings, "PROD_APPS", _PROD_APPS)
+        )
 
         for app_key in APP_KEYS:
             match app_key:
                 case "DEFAULT_DJANGO_APPS":
-                    self.installed_apps.update({app: None for app in DEFAULT_DJANGO_APPS})
+                    self.installed_apps.update({app: None for app in default_django_apps})
                 case "THIRD_PARTY_APPS":
-                    self.installed_apps.update({app: None for app in THIRD_PARTY_APPS})
+                    self.installed_apps.update({app: None for app in third_party_apps})
                 case "DEV_APPS":
-                    if DEBUG:
-                        self.installed_apps.update({app: None for app in DEV_APPS})
+                    if debug:
+                        self.installed_apps.update({app: None for app in dev_apps})
                 case "PROD_APPS":
-                    if not DEBUG:
-                        self.installed_apps.update({app: None for app in PROD_APPS})
+                    if not debug:
+                        self.installed_apps.update({app: None for app in prod_apps})
 
         def _register(
             parsed_apps: dict[str, ModuleConfigDescriptionType],
@@ -128,6 +141,5 @@ class AppRegistry:
                 app_config: AppConfig = AppConfig.create(current_path)
                 self.installed_apps[app_config] = config
 
-        assert DEFAULT_APPS_DIR is not None, "Mention the `DEFAULT_APPS_DIR`."
-        _register(self.parsed_apps, module_path=DEFAULT_APPS_DIR)
+        _register(self.parsed_apps, module_path=apps_dir)
         self._populated = True
