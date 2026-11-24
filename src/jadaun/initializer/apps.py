@@ -35,16 +35,33 @@ class AppRegistry:
         self.parsed_apps = parsed_config_apps
         self._populated = False
 
-    def populate(self, DEFAULT_APPS_DIR: str | None = None) -> None:
+    def populate(
+        self,
+        DEFAULT_APPS_DIR: str | None = None,
+        *,
+        DEBUG: bool | None = None,
+        DEFAULT_DJANGO_APPS: list[str] | None = None,
+        THIRD_PARTY_APPS: list[str] | None = None,
+        DEV_APPS: list[str] | None = None,
+        PROD_APPS: list[str] | None = None,
+    ) -> None:
         """Discover and register every configured app.
 
         Idempotent: once populated, further calls are no-ops, so callers
         don't need to guard against re-triggering imports/filesystem checks.
 
-        Every key read here (`DEFAULT_APPS_DIR`, `DEFAULT_DJANGO_APPS`,
-        `THIRD_PARTY_APPS`, `DEV_APPS`, `PROD_APPS`) is read from the host
-        project's Django settings via `getattr`, with safe defaults, so this
-        package never has to own or ship its own settings module.
+        Every key here (`DEFAULT_APPS_DIR`, `DEBUG`, `DEFAULT_DJANGO_APPS`,
+        `THIRD_PARTY_APPS`, `DEV_APPS`, `PROD_APPS`) can be passed explicitly;
+        any left as `None` are read from the host project's Django settings
+        via `getattr`, with safe defaults - so this package never has to own
+        or ship its own settings module.
+
+        Callers that run this *during* Django settings-module import (as
+        `jadaun.autowire` does) must pass every value explicitly instead of
+        relying on the `django.conf.settings` fallback: touching
+        `django.conf.settings` mid-import would trigger Django's lazy setup
+        using a half-initialized settings module, silently dropping whatever
+        is defined after that point in the file.
         """
         if self._populated:
             return
@@ -52,43 +69,31 @@ class AppRegistry:
         DEFAULT_APPS_DIR = DEFAULT_APPS_DIR or getattr(
             settings, "DEFAULT_APPS_DIR", _DEFAULT_APPS_DIR
         )
+        if DEBUG is None:
+            DEBUG = settings.DEBUG
+        if DEFAULT_DJANGO_APPS is None:
+            DEFAULT_DJANGO_APPS = getattr(
+                settings, "DEFAULT_DJANGO_APPS", _DEFAULT_DJANGO_APPS
+            )
+        if THIRD_PARTY_APPS is None:
+            THIRD_PARTY_APPS = getattr(settings, "THIRD_PARTY_APPS", _THIRD_PARTY_APPS)
+        if DEV_APPS is None:
+            DEV_APPS = getattr(settings, "DEV_APPS", _DEV_APPS)
+        if PROD_APPS is None:
+            PROD_APPS = getattr(settings, "PROD_APPS", _PROD_APPS)
 
         for app_key in APP_KEYS:
             match app_key:
                 case "DEFAULT_DJANGO_APPS":
-                    self.installed_apps.update(
-                        {
-                            app: None
-                            for app in getattr(
-                                settings, "DEFAULT_DJANGO_APPS", _DEFAULT_DJANGO_APPS
-                            )
-                        }
-                    )
+                    self.installed_apps.update({app: None for app in DEFAULT_DJANGO_APPS})
                 case "THIRD_PARTY_APPS":
-                    self.installed_apps.update(
-                        {
-                            app: None
-                            for app in getattr(
-                                settings, "THIRD_PARTY_APPS", _THIRD_PARTY_APPS
-                            )
-                        }
-                    )
+                    self.installed_apps.update({app: None for app in THIRD_PARTY_APPS})
                 case "DEV_APPS":
-                    if settings.DEBUG:
-                        self.installed_apps.update(
-                            {
-                                app: None
-                                for app in getattr(settings, "DEV_APPS", _DEV_APPS)
-                            }
-                        )
+                    if DEBUG:
+                        self.installed_apps.update({app: None for app in DEV_APPS})
                 case "PROD_APPS":
-                    if not settings.DEBUG:
-                        self.installed_apps.update(
-                            {
-                                app: None
-                                for app in getattr(settings, "PROD_APPS", _PROD_APPS)
-                            }
-                        )
+                    if not DEBUG:
+                        self.installed_apps.update({app: None for app in PROD_APPS})
 
         def _register(
             parsed_apps: dict[str, ModuleConfigDescriptionType],

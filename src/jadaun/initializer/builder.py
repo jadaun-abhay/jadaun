@@ -29,18 +29,34 @@ class Builder:
         self.apps = AppRegistry(self._parse(modules))
         self._built = False
 
-    def build(self) -> list[URLPattern | URLResolver]:
-        """Run app discovery and generate urlpatterns.
+    def populate_apps(self, **populate_overrides: Any) -> None:
+        """Discover apps and set `settings.INSTALLED_APPS` - nothing else.
 
-        Idempotent: the first call does the work (populating `self.apps`,
-        setting `settings.INSTALLED_APPS` and `self.urlpatterns`); later
-        calls just return the cached `self.urlpatterns`.
+        Unlike `build()`, this never imports a single app's own view
+        modules (which may import models), so it's safe to call this
+        *before* `django.setup()` - all it does is filesystem checks and
+        `AppConfig.create()`, which only introspects a module path.
+
+        `populate_overrides` (`DEFAULT_APPS_DIR`, `DEBUG`,
+        `DEFAULT_DJANGO_APPS`, `THIRD_PARTY_APPS`, `DEV_APPS`, `PROD_APPS`)
+        are forwarded to `AppRegistry.populate` as-is; see its docstring for
+        why `jadaun.autowire` needs to pass all of them explicitly.
+        """
+        self.apps.populate(**populate_overrides)
+        settings.INSTALLED_APPS = list(self.apps.installed_apps.keys())
+
+    def build(self, **populate_overrides: Any) -> list[URLPattern | URLResolver]:
+        """Run app discovery (if needed) and generate urlpatterns.
+
+        Idempotent: the first call does the work; later calls just return
+        the cached `self.urlpatterns`. Imports every discovered app's view
+        modules, so only call this once the app registry is ready - i.e.
+        after `django.setup()` - or let `jadaun.autowire` defer it for you.
         """
         if self._built:
             return self.urlpatterns
 
-        self.apps.populate()
-        settings.INSTALLED_APPS = list(self.apps.installed_apps.keys())
+        self.populate_apps(**populate_overrides)
         self.urlpatterns = self._build_urls()
         self._built = True
         return self.urlpatterns
