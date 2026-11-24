@@ -1,2 +1,3 @@
-def hello() -> str:
-    return "Hello from jadaun!"
+from jadaun.autowire import autowire
+
+__all__ = ["autowire"]
